@@ -53,6 +53,131 @@ void sigquit_handler(int sig);
 void cleanup(void);
 
 /**
+ * @brief <What does is_builtIn do?>
+ *
+ * TODO: Delete this comment and replace it with your own.
+ *
+ * NOTE: Cite Figure 8.24 from textbook
+ * It takes in the argv, a field from the token struct after calling parseline.
+ * It judges if the command is a built_in command, if so, it does the job here.
+ */
+
+int builtin_command(struct cmdline_tokens *token) {
+   int is_builtIn = 0;
+    if (token->builtin == BUILTIN_NONE) {
+       is_builtIn = 0;
+    }
+    else if (token->builtin == BUILTIN_QUIT) {
+        exit(0);
+        is_builtIn = 1;
+    }
+     else if (token->builtin == BUILTIN_JOBS) {
+        list_jobs(STDOUT_FILENO);
+        is_builtIn = 1;
+    }
+    else if (token->builtin == BUILTIN_BG) {
+        char** argv = token->argv;
+        jid_t new_job;
+        pid_t new_pid_job;
+        const char *cmd_line;
+        if (argv[1][0] == '&'){
+            //if the job argument is a JID
+            new_job = (jid_t)(argv[1]);
+            cmd_line = job_get_cmdline(new_job);
+            new_pid_job = job_get_pid(new_job);
+        }
+        else {
+            //the job argument is a PID
+            pid_t new_pid_job = (pid_t)(argv[1]);
+            jid_t new_job = job_from_pid(new_pid_job);
+            cmd_line = job_get_cmdline(new_job);
+        }
+        kill(new_pid_job,SIGCONT);
+        enum job_state new_job_state = BG;
+        cmd_line = job_get_cmdline(new_job);
+        add_job(new_pid_job, new_job_state, cmd_line);
+        //need to set the state (bg), and then add to the jobs list
+        is_builtIn = 1;
+    }
+    else if (token->builtin == BUILTIN_FG) {
+        char** argv = (token)->argv;
+        jid_t new_job;
+        pid_t new_pid_job;
+        const char *cmd_line;
+        if (argv[1][0] == '&') {
+            //if the job argument is a JID
+            new_job = (jid_t)(argv[1]);
+            cmd_line = job_get_cmdline(new_job);
+            new_pid_job = job_get_pid(new_job);
+        }
+        else {
+            //the job argument is a PID
+           pid_t new_pid_job = (pid_t)(argv[1]);
+           jid_t new_job = job_from_pid(new_pid_job);
+           cmd_line = job_get_cmdline(new_job);
+        }
+        kill(new_pid_job,SIGCONT);
+        enum job_state new_job_state = FG;
+        cmd_line = job_get_cmdline(new_job);
+        add_job(new_pid_job, new_job_state, cmd_line);
+        //need to set the state (bg), and then add to the jobs list
+        is_builtIn = 1;
+    }
+   return is_builtIn;
+}
+
+
+// * @brief <What does eval do?>
+//  *
+//  * TODO: Delete this comment and replace it with your own.
+//  *
+//  * NOTE: The shell is supposed to be a long-running process, so this function
+//  *       (and its helpers) should avoid exiting on error.  This is not to say
+//  *       they shouldn't detect and print (or otherwise handle) errors!
+//  */
+void eval(const char *cmdline) {
+    parseline_return parse_result;
+    struct cmdline_tokens *token;
+    int bg;
+    pid_t pid;
+    // Parse command line
+    parse_result = parseline(cmdline, token);
+    if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
+        return;
+    }
+    char **argv = token->argv;
+    int argc = token->argc;
+    if (argv[0] == NULL) {
+        return;
+    }
+    int is_builtIn = builtin_command(token);
+    if (!is_builtIn) {
+       //builtin commands would be handled separately
+       if ((pid = fork()) == 0) {
+           //child runs the user job
+            if (execve(argv[0], argv, environ) < 0) {
+               sio_printf("%s: Command not found\n", argv[0]);
+            }
+        }
+        //parent wiats for foreground job to terminate
+        if (!(strcmp(argv[argc-1],"&"))) {
+            //if the command line ends with "bg"
+            bg = 1;
+        }
+        if (!bg) {
+            int status;
+            if (waitpid(pid, &status, 0) < 0) {
+                perror("waitfig error");
+            }
+        }
+        else {
+            sio_printf("%d %s", pid, cmdline);
+        }
+    }
+    return;
+}
+
+/**
  * @brief <Write main's function header documentation. What does main do?>
  *
  * TODO: Delete this comment and replace it with your own.
@@ -159,155 +284,91 @@ int main(int argc, char **argv) {
     return -1; // control never reaches here
 }
 
-/**
- * @brief <What does is_builtIn do?>
- *
- * TODO: Delete this comment and replace it with your own.
- *
- * NOTE: Cite Figure 8.24 from textbook
- * It takes in the argv, a field from the token struct after calling parseline.
- * It judges if the command is a built_in command, if so, it does the job here.
- */
-
-int builtin_command(struct cmdline_tokens *token) {
-    int is_builtIn = 0;
-    if (token->builtin == BUILTIN_NONE) {
-        is_builtIn = 0;
-    }
-    else if (token->builtin == BUILTIN_QUIT) {
-        exit(0);
-        is_builtIn = 1;
-    }
-    else if (token->builtin == BUILTIN_JOBS) {
-        list_jobs(STDOUT_FILENO);
-        is_builtIn = 1;
-    }
-    else if (token->builtin == BUILTIN_BG) {
-        char** argv = (token)->argv;
-        kill(argv[1], SIGCONT);
-        jid_t new_job;
-        pid_t new_pid_job;
-        const char *cmd_line;
-        if (!strcmp(argv[1][0],"%")) {
-            //if the job argument is a JID
-            new_job = (jid_t)(argv[1]);
-            cmd_line = job_get_cmdline(new_job);
-            new_pid_job = job_get_pid(new_job);
-        }
-        else {
-            //the job argument is a PID
-            pid_t new_pid_job = (pid_t)(argv[1]);
-            jid_t new_job = job_from_pid(new_pid_job);
-            cmd_line = job_get_cmdline(new_job);
-        }
-        enum job_state new_job_state = BG;
-        const char *cmd_line = job_get_cmdline(new_job);
-        add_job(new_pid_job, new_job_state, cmd_line);
-        //need to set the state (bg), and then add to the jobs list
-        is_builtIn = 1;
-    }
-    else if (token->builtin == BUILTIN_FG) {
-        char** argv = (token)->argv;
-        kill(argv[1], SIGCONT);
-        jid_t new_job;
-        pid_t new_pid_job;
-        const char *cmd_line;
-        if (!strcmp(argv[1][0],"%")) {
-            //if the job argument is a JID
-            new_job = (jid_t)(argv[1]);
-            cmd_line = job_get_cmdline(new_job);
-            new_pid_job = job_get_pid(new_job);
-        }
-        else {
-            //the job argument is a PID
-            pid_t new_pid_job = (pid_t)(argv[1]);
-            jid_t new_job = job_from_pid(new_pid_job);
-            cmd_line = job_get_cmdline(new_job);
-        }
-        enum job_state new_job_state = FG;
-        const char *cmd_line = job_get_cmdline(new_job);
-        add_job(new_pid_job, new_job_state, cmd_line);
-        //need to set the state (bg), and then add to the jobs list
-        is_builtIn = 1;
-    }
-   return is_builtIn;
-}
-/**
- * @brief <What does eval do?>
- *
- * TODO: Delete this comment and replace it with your own.
- *
- * NOTE: The shell is supposed to be a long-running process, so this function
- *       (and its helpers) should avoid exiting on error.  This is not to say
- *       they shouldn't detect and print (or otherwise handle) errors!
- */
-void eval(const char *cmdline) {
-    parseline_return parse_result;
-    struct cmdline_tokens *token;
-    int bg;
-    pid_t pid;
-    // Parse command line
-    parse_result = parseline(cmdline, token);
-    if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
-        return;
-    }
-    char **argv = token->argv;
-    int argc = token->argc;
-    int bg;
-    if (argv[0] == NULL) {
-        return;
-    }
-    int is_builtIn = builtin_command(token);
-    if (!is_builtIn) {
-       //builtin commands would be handled separately
-       if ((pid = Fork()) == 0) {
-           //child runs the user job
-            if (execve(argv[0], argv, environ) < 0) {
-               sio_printf("%s: Command not found\n", argv[0]);
-            }
-        }
-        //parent wiats for foreground job to terminate
-        if (!(strcmp(argv[argc-1],"&"))) {
-            //if the command line ends with "bg"
-            bg = 1;
-        }
-        if (!bg) {
-            int status;
-            if (waitpid(pid, &status, 0) < 0) {
-                perror("waitfig error");
-            }
-        }
-        else {
-            sio_printf("%d %s", pid, cmdline);
-        }
-    }
-    return;
-}
-
+ 
 /*****************
- * Signal handlers
+  Signal handlers
  *****************/
 
 /**
  * @brief <What does sigchld_handler do?>
- *
- * TODO: Delete this comment and replace it with your own.
+ * takes in 
+ * TODO: When a child terminates or stops because it received a SIGSTOP, SIGSTP,
+ * SIGTTIN, or SIGTTOU signal, the kernel sends a SIGCHLD to the shell. The 
+ * signal handler sigchld_handler would reap all children that have just become 
+ * zombies. 
+ * Case I: If the child was stopped by a signal, set the state to ST, print out 
+ * the signal;
+ * Case II: if the child was terminated by a signal, also print that out and 
+ * delete the job
+ * Case III: iF the child was run to termination, just delete it
  */
-void sigchld_handler(int sig) {}
+void sigchld_handler(int sig) {
+    int status; 
+    pid_t pid;
+    int olderrno = errno;
+    //alwways save and restore the errno flag
+    while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED)) > 0){
+        //the first argument is -1 so we can reap all zombie children
+        jid_t job = job_from_pid(pid);
+        if (WIFSTOPPED(status)) {
+            //if the child was stopped by a signal
+            //job ID in [], PID in ()
+            enum job_state cur_job_state = job_get_state(job);
+            cur_job_state = ST;
+            sio_printf("Job [%d] (%d) stopped by signal %d\n",
+            job, pid, WSTOPSIG(status));
+        }
+        else if (WIFSIGNALED(status)) {
+            //if the child was terminated by a signal that was not caught
+            sio_printf("Job [%d] (%d) terminated by signal %d\n",
+            job, pid, WTERMSIG(status));
+            delete_job(job);
+        }
+        else{
+            delete_job(job);
+        }
+    }
+    errno = olderrno;
+    return;
+}
 
 /**
  * @brief <What does sigint_handler do?>
- *
- * TODO: Delete this comment and replace it with your own.
+ * //param[in]: input signal to be sent to the foreground job
+ * TODO: sigint handles Ctrl-C from the keyboard. When the shell receives this
+ * signal from the kernel, the handler sends it to the foreground if there 
+ * exists such one.
  */
-void sigint_handler(int sig) {}
+void sigint_handler(int sig) {
+    jid_t foreground_job = fg_job();
+    int olderrno = errno;
+    if (foreground_job != 0) {
+        //if fg_job() returns 0, then there is no foreground job
+        pid_t fg_job_pid = job_get_pid(foreground_job);
+        kill(fg_job_pid, sig);
+    }
+    errno = olderrno;
+    return;
+}
 
 /**
- * @brief <What does sigtstp_handler do?>
- *
- * TODO: Delete this comment and replace it with your own.
+ * @brief <What does sigstp_handler do?>
+ * //param[in]: input signal to be sent to the foreground job
+ * TODO: sigint handles Ctrl-Z from the keyboard. When the shell receives this
+ * signal from the kernel, the handler sends it to the foreground if there 
+ * exists such one.
  */
-void sigtstp_handler(int sig) {}
+void sigtstp_handler(int sig) {
+    jid_t foreground_job = fg_job();
+    int olderrno = errno;
+    if (foreground_job != 0) {
+        //if fg_job() returns 0, then there is no foreground job
+        pid_t fg_job_pid = job_get_pid(foreground_job);
+        kill(fg_job_pid, sig);
+    }
+    errno = olderrno;
+    return;
+}
 
 /**
  * @brief Attempt to clean up global resources when the program exits.
