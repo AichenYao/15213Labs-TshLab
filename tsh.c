@@ -27,6 +27,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <signal.h>
 
 /*
  * If DEBUG is defined, enable contracts and printing on dbg_printf.
@@ -51,6 +52,46 @@ void sigtstp_handler(int sig);
 void sigint_handler(int sig);
 void sigquit_handler(int sig);
 void cleanup(void);
+
+
+
+//-----------------------Wrapper Functions--------------------------
+//this accounts for error handling
+pid_t Fork(void) {
+    pid_t pid;
+    if ((pid = fork()) < 0) {
+        perror("fork error");
+    }
+    return pid;
+}
+
+void Execve(const char *filename, char *const argv[], char *const envp[]) {
+    if (execve(filename, argv, envp) < 0) {
+        perror("execve error");
+    }
+    return;
+}
+
+void Sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
+    if (sigprocmask(how, set, oldset) < 0) {
+        perror("sigprocmask error");
+    }
+    return;
+}
+
+void Sigemptyset(sigset_t *set) {
+    if (sigemptyset(set) < 0) {
+        perror("sigemptyset error");
+    }
+    return;
+}
+
+void Sigaddset(sigset_t *set, int signum) {
+    if (sigaddset(set, signum) < 0) {
+        perror("sigaddset error");
+    }
+    return;
+}
 
 /**
  * @brief <What does is_builtIn do?>
@@ -81,21 +122,22 @@ int builtin_command(struct cmdline_tokens *token) {
         pid_t new_pid_job;
         const char *cmd_line;
         if (argv[1][0] == '&'){
+            sscanf(*argv, "%d", &new_job);
             //if the job argument is a JID
-            new_job = (jid_t)(argv[1]);
             cmd_line = job_get_cmdline(new_job);
             new_pid_job = job_get_pid(new_job);
         }
         else {
             //the job argument is a PID
-            pid_t new_pid_job = (pid_t)(argv[1]);
+            sscanf(*argv, "%d", &new_pid_job);
             jid_t new_job = job_from_pid(new_pid_job);
             cmd_line = job_get_cmdline(new_job);
         }
         kill(new_pid_job,SIGCONT);
-        enum job_state new_job_state = BG;
+        job_state new_job_state = BG;
         cmd_line = job_get_cmdline(new_job);
         add_job(new_pid_job, new_job_state, cmd_line);
+        sio_printf("[%d] (%d) /bin/ls &\n", new_job, new_pid_job);
         //need to set the state (bg), and then add to the jobs list
         is_builtIn = 1;
     }
@@ -105,19 +147,19 @@ int builtin_command(struct cmdline_tokens *token) {
         pid_t new_pid_job;
         const char *cmd_line;
         if (argv[1][0] == '&') {
+            sscanf(*argv, "%d", &new_job);
             //if the job argument is a JID
-            new_job = (jid_t)(argv[1]);
             cmd_line = job_get_cmdline(new_job);
             new_pid_job = job_get_pid(new_job);
         }
         else {
             //the job argument is a PID
-           pid_t new_pid_job = (pid_t)(argv[1]);
+           sscanf(*argv, "%d", &new_pid_job);
            jid_t new_job = job_from_pid(new_pid_job);
            cmd_line = job_get_cmdline(new_job);
         }
         kill(new_pid_job,SIGCONT);
-        enum job_state new_job_state = FG;
+        job_state new_job_state = FG;
         cmd_line = job_get_cmdline(new_job);
         add_job(new_pid_job, new_job_state, cmd_line);
         //need to set the state (bg), and then add to the jobs list
@@ -137,30 +179,30 @@ int builtin_command(struct cmdline_tokens *token) {
 //  */
 void eval(const char *cmdline) {
     parseline_return parse_result;
-    struct cmdline_tokens *token;
+    struct cmdline_tokens token;
     int bg;
     pid_t pid;
     // Parse command line
-    parse_result = parseline(cmdline, token);
+    parse_result = parseline(cmdline, &token);
     if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
         return;
     }
-    char **argv = token->argv;
-    int argc = token->argc;
+    char **argv = token.argv;
     if (argv[0] == NULL) {
         return;
     }
-    int is_builtIn = builtin_command(token);
+    int is_builtIn = builtin_command(&token);
     if (!is_builtIn) {
        //builtin commands would be handled separately
        if ((pid = fork()) == 0) {
-           //child runs the user job
+           //child runs the newly created user job
             if (execve(argv[0], argv, environ) < 0) {
                sio_printf("%s: Command not found\n", argv[0]);
+               exit(-1);
             }
         }
-        //parent wiats for foreground job to terminate
-        if (!(strcmp(argv[argc-1],"&"))) {
+        //parent waits for foreground job to terminate
+        if (parse_result == PARSELINE_BG) {
             //if the command line ends with "bg"
             bg = 1;
         }
@@ -191,7 +233,7 @@ int main(int argc, char **argv) {
     char c;
     char cmdline[MAXLINE_TSH]; // Cmdline for fgets
     bool emit_prompt = true;   // Emit prompt (default)
-
+    // pid_t pid;
     // Redirect stderr to stdout (so that driver will get all output
     // on the pipe connected to stdout)
     if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
@@ -242,6 +284,7 @@ int main(int argc, char **argv) {
     }
 
     // Install the signal handlers
+    // sigset_t mask, prev;
     Signal(SIGINT, sigint_handler);   // Handles Ctrl-C
     Signal(SIGTSTP, sigtstp_handler); // Handles Ctrl-Z
     Signal(SIGCHLD, sigchld_handler); // Handles terminated or stopped child
@@ -253,8 +296,18 @@ int main(int argc, char **argv) {
 
     // Execute the shell's read/eval loop
     while (true) {
+        // Sigprocmask(SIG_BLOCK, &mask, &prev); //block SIGCHLD
+        // if (Fork() == 0) {
+        //     exit(0);
+        // }
+        // pid = 0;
+        // Sigprocmask(SIG_SETMASK, &prev, NULL); //unblock SIGCHLD
+        // while (!pid) //wait for SIGCHLD to be received
+        // {
+        //     sigsuspend(&mask);
+        // }
         if (emit_prompt) {
-            printf("%s", prompt);
+            sio_printf("%s", prompt);
 
             // We must flush stdout since we are not printing a full line.
             fflush(stdout);
@@ -267,7 +320,10 @@ int main(int argc, char **argv) {
 
         if (feof(stdin)) {
             // End of file (Ctrl-D)
-            printf("\n");
+            sio_printf("\n");
+            fflush(stdout);
+            fflush(stderr);
+            exit(0);
             return 0;
         }
 
@@ -312,9 +368,12 @@ void sigchld_handler(int sig) {
         jid_t job = job_from_pid(pid);
         if (WIFSTOPPED(status)) {
             //if the child was stopped by a signal
+            //delete the old job and add a new one with the state set to ST
             //job ID in [], PID in ()
-            enum job_state cur_job_state = job_get_state(job);
-            cur_job_state = ST;
+            delete_job(job);
+            job_state new_job_state = ST;
+            const char *cmdline = job_get_cmdline(job);
+            add_job(pid, new_job_state, cmdline);
             sio_printf("Job [%d] (%d) stopped by signal %d\n",
             job, pid, WSTOPSIG(status));
         }
