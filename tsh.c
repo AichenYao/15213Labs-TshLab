@@ -21,13 +21,13 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <signal.h>
 
 /*
  * If DEBUG is defined, enable contracts and printing on dbg_printf.
@@ -52,12 +52,8 @@ void sigtstp_handler(int sig);
 void sigint_handler(int sig);
 void sigquit_handler(int sig);
 void cleanup(void);
-
-//-----------------------masks for signal blocking-------------------
-sigset_t mask_all, mask_sigchld;
-
 //-----------------------Wrapper Functions--------------------------
-//this accounts for error handling as done by the textbook
+// this accounts for error handling as done by the textbook
 pid_t Fork(void) {
     pid_t pid;
     if ((pid = fork()) < 0) {
@@ -112,70 +108,61 @@ void Sigfillset(sigset_t *set) {
  */
 
 int builtin_command(struct cmdline_tokens *token) {
-   int is_builtIn = 0;
+    int is_builtIn = 0;
     if (token->builtin == BUILTIN_NONE) {
-       is_builtIn = 0;
-    }
-    else if (token->builtin == BUILTIN_QUIT) {
+        is_builtIn = 0;
+    } else if (token->builtin == BUILTIN_QUIT) {
         exit(0);
         is_builtIn = 1;
-    }
-     else if (token->builtin == BUILTIN_JOBS) {
+    } else if (token->builtin == BUILTIN_JOBS) {
         list_jobs(STDOUT_FILENO);
         is_builtIn = 1;
-    }
-    else if (token->builtin == BUILTIN_BG) {
-        char** argv = token->argv;
+    } else if (token->builtin == BUILTIN_BG) {
+        char **argv = token->argv;
         jid_t new_job;
         pid_t new_pid_job;
         const char *cmd_line;
-        if (argv[1][0] == '&'){
+        if (argv[1][0] == '%') {
             sscanf(*argv, "%d", &new_job);
-            //if the job argument is a JID
-            cmd_line = job_get_cmdline(new_job);
+            // if the job argument is a JID
             new_pid_job = job_get_pid(new_job);
-        }
-        else {
-            //the job argument is a PID
+            cmd_line = job_get_cmdline(new_job);
+        } else {
+            // the job argument is a PID
             sscanf(*argv, "%d", &new_pid_job);
             jid_t new_job = job_from_pid(new_pid_job);
             cmd_line = job_get_cmdline(new_job);
         }
-        kill(new_pid_job,SIGCONT);
+        kill(new_pid_job, SIGCONT);
         job_state new_job_state = BG;
-        cmd_line = job_get_cmdline(new_job);
         add_job(new_pid_job, new_job_state, cmd_line);
         sio_printf("[%d] (%d) /bin/ls &\n", new_job, new_pid_job);
-        //need to set the state (bg), and then add to the jobs list
+        // need to set the state (bg), and then add to the jobs list
         is_builtIn = 1;
-    }
-    else if (token->builtin == BUILTIN_FG) {
-        char** argv = (token)->argv;
+    } else if (token->builtin == BUILTIN_FG) {
+        char **argv = (token)->argv;
         jid_t new_job;
         pid_t new_pid_job;
         const char *cmd_line;
-        if (argv[1][0] == '&') {
+        if (argv[1][0] == '%') {
             sscanf(*argv, "%d", &new_job);
-            //if the job argument is a JID
-            cmd_line = job_get_cmdline(new_job);
+            // if the job argument is a JID
             new_pid_job = job_get_pid(new_job);
+            cmd_line = job_get_cmdline(new_job);
+        } else {
+            // the job argument is a PID
+            sscanf(*argv, "%d", &new_pid_job);
+            jid_t new_job = job_from_pid(new_pid_job);
+            cmd_line = job_get_cmdline(new_job);
         }
-        else {
-            //the job argument is a PID
-           sscanf(*argv, "%d", &new_pid_job);
-           jid_t new_job = job_from_pid(new_pid_job);
-           cmd_line = job_get_cmdline(new_job);
-        }
-        kill(new_pid_job,SIGCONT);
+        kill(new_pid_job, SIGCONT);
         job_state new_job_state = FG;
-        cmd_line = job_get_cmdline(new_job);
         add_job(new_pid_job, new_job_state, cmd_line);
-        //need to set the state (bg), and then add to the jobs list
+        // need to set the state (bg), and then add to the jobs list
         is_builtIn = 1;
     }
-   return is_builtIn;
+    return is_builtIn;
 }
-
 
 // * @brief <What does eval do?>
 //  *
@@ -188,9 +175,10 @@ int builtin_command(struct cmdline_tokens *token) {
 void eval(const char *cmdline) {
     parseline_return parse_result;
     struct cmdline_tokens token;
-    int bg;
+    int bg = 0;
     pid_t pid;
-    sigset_t prev_mask;
+    sigset_t mask, prev;
+
     // Parse command line
     parse_result = parseline(cmdline, &token);
     if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
@@ -201,46 +189,50 @@ void eval(const char *cmdline) {
         return;
     }
     int is_builtIn = builtin_command(&token);
+    if (parse_result == PARSELINE_BG) {
+        // if the current job runs in the background
+        bg = 1;
+    }
     if (!is_builtIn) {
-       //builtin commands would be handled separately
-       Sigprocmask(SIG_BLOCK, &mask_sigchld, &prev_mask);
-       if ((pid = fork()) == 0) {
-           //child runs the newly created user job
-           setpgid(0, 0);
-           Sigprocmask(SIG_SETMASK, &prev_mask, NULL);
-           //assign each new child process a group ID
-            if (execve(argv[0], argv, environ) < 0) {
-               sio_printf("%s: Command not found\n", argv[0]);
-               exit(-1);
+        // builtin commands would be handled separately
+        if ((pid = Fork()) == 0) {
+            //child runs the newly created user job
+            //assign each new child process a group ID
+            setpgid(0, 0);
+            int exec_result = execve(argv[0], argv, environ);
+            if (exec_result < 0) {
+                sio_printf("%s: Command not found\n", argv[0]);
+                exit(-1);
             }
         }
-        //parent waits for foreground job to terminate
-        //the following is for the parent only
-        if (parse_result == PARSELINE_BG) {
-            //if the command line ends with "bg"
-            bg = 1;
-        }
-        Sigprocmask(SIG_BLOCK, &mask_all, NULL); //block all signals
-        jid_t job = job_from_pid(pid);
-        const char *cmdline = job_get_cmdline(job);
-        job_state cur_state = job_get_state(job);
-        if (bg) {
-            //if the job is a job in the background
+        Sigemptyset(&mask);
+        Sigaddset(&mask, SIGINT);
+        Sigaddset(&mask, SIGTSTP);
+        Sigaddset(&mask, SIGCHLD);
+        Sigprocmask(SIG_BLOCK, &mask, &prev);
+        //the following code is for the parent
+        //block all signals when we are accessing the global variables using
+        //add_job(), delete_job(), and waitpid().
+        if (bg) 
+        {
+            // if the job is a job in the background
+            job_state cur_state = BG;
             add_job(pid, cur_state, cmdline);
-            //print if the job is in background
-            //format: [job_id] (pid) cmdline
-            sio_printf("[%d] (%d) %s", job, pid, cmdline);
-        }
+            jid_t job = job_from_pid(pid);
+            sio_printf("[%d] (%d) %s \n", job, pid, cmdline);
+        } 
         else {
+            // if the job runs in the foreground
+            job_state cur_state = FG;
             add_job(pid, cur_state, cmdline);
         }
-        Sigprocmask(SIG_SETMASK, &prev_mask, NULL); //restore original signals
-        if (!bg) {
+        pid_t fg_pid = fg_job();
+        if (fg_pid != 0) {
+            //only wait for foreground job
             int status;
-            if (waitpid(pid, &status, 0) < 0) {
-                perror("waitfig error");
-            }
+            waitpid(fg_pid, &status, 0);
         }
+        Sigprocmask(SIG_SETMASK, &prev, NULL);
     }
     return;
 }
@@ -296,9 +288,6 @@ int main(int argc, char **argv) {
         exit(1);
     }
 
-    // Initialize the job list
-    init_job_list();
-
     // Register a function to clean up the job list on program termination.
     // The function may not run in the case of abnormal termination (e.g. when
     // using exit or terminating due to a signal handler), so in those cases,
@@ -310,18 +299,16 @@ int main(int argc, char **argv) {
 
     // Install the signal handlers
 
-    Sigfillset(&mask_all); //block SIGCHLD
-    Sigemptyset(&mask_sigchld);
-    Sigaddset(&mask_sigchld, SIGCHLD);
-    
     Signal(SIGINT, sigint_handler);   // Handles Ctrl-C
     Signal(SIGCHLD, sigchld_handler); // Handles terminated or stopped child
     Signal(SIGTSTP, sigtstp_handler); // Handles Ctrl-Z
-    
-    Signal(SIGTTIN, SIG_IGN); //ignore :background read from the terminal
-    Signal(SIGTTOU, SIG_IGN); //ignore :background wrote to the terminal
+
+    Signal(SIGTTIN, SIG_IGN); // ignore :background read from the terminal
+    Signal(SIGTTOU, SIG_IGN); // ignore :background wrote to the terminal
     Signal(SIGQUIT, sigquit_handler);
-  
+
+    // Initialize the job list
+    init_job_list();
 
     // Execute the shell's read/eval loop
     while (true) {
@@ -358,54 +345,54 @@ int main(int argc, char **argv) {
     return -1; // control never reaches here
 }
 
- 
 /*****************
   Signal handlers
  *****************/
 
 /**
  * @brief <What does sigchld_handler do?>
- * takes in 
+ * takes in
  * TODO: When a child terminates or stops because it received a SIGSTOP, SIGSTP,
- * SIGTTIN, or SIGTTOU signal, the kernel sends a SIGCHLD to the shell. The 
- * signal handler sigchld_handler would reap all children that have just become 
- * zombies. 
- * Case I: If the child was stopped by a signal, set the state to ST, print out 
+ * SIGTTIN, or SIGTTOU signal, the kernel sends a SIGCHLD to the shell. The
+ * signal handler sigchld_handler would reap all children that have just become
+ * zombies.
+ * Case I: If the child was stopped by a signal, set the state to ST, print out
  * the signal;
- * Case II: if the child was terminated by a signal, also print that out and 
+ * Case II: if the child was terminated by a signal, also print that out and
  * delete the job
  * Case III: iF the child was run to termination, just delete it
  */
 void sigchld_handler(int sig) {
-    int status; 
+    // sio_printf("-------entered sigchld_handler--------\n");
+    int status;
     pid_t pid;
     int olderrno = errno;
-    sigset_t prev_mask;
-    Sigfillset(&mask_all);
-    //alwways save and restore the errno flag
-    while ((pid = waitpid(-1, &status, WNOHANG|WUNTRACED)) > 0){
-        Sigprocmask(SIG_BLOCK, &mask_all, &prev_mask); //block signal
-        //the first argument is -1 so we can reap all zombie children
+    // alwways save and restore the errno flag
+    sigset_t mask, prev_mask;
+    Sigemptyset(&mask);
+    Sigaddset(&mask, SIGCHLD);
+    Sigaddset(&mask, SIGTSTP);
+    Sigaddset(&mask, SIGINT);
+    Sigprocmask(SIG_BLOCK, &mask, &prev_mask); 
+    // block all signals when accessing the job list (global)
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0) {
         jid_t job = job_from_pid(pid);
         if (WIFSTOPPED(status)) {
-            //if the child was stopped by a signal
-            //delete the old job and add a new one with the state set to ST
-            //job ID in [], PID in ()
+            // if the child was stopped by a signal
+            // delete the old job and add a new one with the state set to ST
             job_set_state(job, ST);
-            sio_printf("Job [%d] (%d) stopped by signal %d\n",
-            job, pid, WSTOPSIG(status));
-        }
-        else if (WIFSIGNALED(status)) {
-            //if the child was terminated by a signal that was not caught
-            sio_printf("Job [%d] (%d) terminated by signal %d\n",
-            job, pid, WTERMSIG(status));
+            sio_printf("Job [%d] (%d) stopped by signal %d\n", job, pid,
+                       WSTOPSIG(status));
+        } else if (WIFSIGNALED(status)) {
+            // if the child was terminated by a signal that was not caught
+            sio_printf("Job [%d] (%d) terminated by signal %d\n", job, pid,
+                       WTERMSIG(status));
             delete_job(job);
-        }
-        else{
-            delete_job(job);
+        } else {
+           delete_job(job);
         }
     }
-    Sigprocmask(SIG_SETMASK, &prev_mask, NULL); //restore the blocked signal
+    Sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the blocked signal
     errno = olderrno;
     return;
 }
@@ -414,22 +401,23 @@ void sigchld_handler(int sig) {
  * @brief <What does sigint_handler do?>
  * //param[in]: input signal to be sent to the foreground job
  * TODO: sigint handles Ctrl-C from the keyboard. When the shell receives this
- * signal from the kernel, the handler sends it to the foreground if there 
+ * signal from the kernel, the handler sends it to the foreground if there
  * exists such one.
  */
 void sigint_handler(int sig) {
     jid_t foreground_job = fg_job();
-    sigset_t prev_mask;
-    Sigfillset(&mask_all);
-    Sigprocmask(SIG_BLOCK, &mask_all, &prev_mask); //block signal
+    sigset_t mask, prev_mask;
+    Sigemptyset(&mask);
+    Sigaddset(&mask, SIGINT);
+    Sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signal
     int olderrno = errno;
     if (foreground_job != 0) {
-        //if fg_job() returns 0, then there is no foreground job
+        // if fg_job() returns 0, then there is no foreground job
         pid_t fg_job_pid = job_get_pid(foreground_job);
         kill(fg_job_pid, sig);
     }
     errno = olderrno;
-    Sigprocmask(SIG_SETMASK, &prev_mask, NULL); //restore the blocked signal
+    Sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the blocked signal
     return;
 }
 
@@ -437,16 +425,18 @@ void sigint_handler(int sig) {
  * @brief <What does sigstp_handler do?>
  * //param[in]: input signal to be sent to the foreground job
  * TODO: sigint handles Ctrl-Z from the keyboard. When the shell receives this
- * signal from the kernel, the handler sends it to the foreground if there 
+ * signal from the kernel, the handler sends it to the foreground if there
  * exists such one.
  */
 void sigtstp_handler(int sig) {
     jid_t foreground_job = fg_job();
     int olderrno = errno;
-    sigset_t prev_mask;
-    Sigprocmask(SIG_BLOCK, &mask_all, &prev_mask);
+    sigset_t mask, prev_mask;
+    Sigemptyset(&mask);
+    Sigaddset(&mask, SIGTSTP);
+    Sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signal
     if (foreground_job != 0) {
-        //if fg_job() returns 0, then there is no foreground job
+        // if fg_job() returns 0, then there is no foreground job
         pid_t fg_job_pid = job_get_pid(foreground_job);
         kill(fg_job_pid, sig);
     }
