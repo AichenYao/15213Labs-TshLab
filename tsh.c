@@ -126,44 +126,45 @@ int builtin_command(struct cmdline_tokens *token) {
     } else if (token->builtin == BUILTIN_BG) {
         char **argv = token->argv;
         jid_t new_job;
-        pid_t new_pid_job;
+        pid_t new_pid;
         const char *cmd_line;
         if (argv[1][0] == '%') {
             sscanf(*argv, "%d", &new_job);
             // if the job argument is a JID
-            new_pid_job = job_get_pid(new_job);
+            sio_printf("new job: %d \n", new_job);
+            new_pid = job_get_pid(new_job);
             cmd_line = job_get_cmdline(new_job);
         } else {
             // the job argument is a PID
-            sscanf(*argv, "%d", &new_pid_job);
-            jid_t new_job = job_from_pid(new_pid_job);
+            sscanf(*argv, "%d", &new_pid);
+            jid_t new_job = job_from_pid(new_pid);
             cmd_line = job_get_cmdline(new_job);
         }
-        kill(new_pid_job, SIGCONT);
+        kill(new_pid, SIGCONT);
         job_state new_job_state = BG;
-        add_job(new_pid_job, new_job_state, cmd_line);
-        sio_printf("[%d] (%d) /bin/ls &", new_job, new_pid_job);
+        add_job(new_pid, new_job_state, cmd_line);
+        sio_printf("[%d] (%d) /bin/ls &", new_job, new_pid);
         // need to set the state (bg), and then add to the jobs list
         is_builtIn = 1;
     } else if (token->builtin == BUILTIN_FG) {
         char **argv = (token)->argv;
         jid_t new_job;
-        pid_t new_pid_job;
+        pid_t new_pid;
         const char *cmd_line;
         if (argv[1][0] == '%') {
             sscanf(*argv, "%d", &new_job);
             // if the job argument is a JID
-            new_pid_job = job_get_pid(new_job);
+            new_pid = job_get_pid(new_job);
             cmd_line = job_get_cmdline(new_job);
         } else {
             // the job argument is a PID
-            sscanf(*argv, "%d", &new_pid_job);
-            jid_t new_job = job_from_pid(new_pid_job);
+            sscanf(*argv, "%d", &new_pid);
+            jid_t new_job = job_from_pid(new_pid);
             cmd_line = job_get_cmdline(new_job);
         }
-        kill(new_pid_job, SIGCONT);
+        kill(new_pid, SIGCONT);
         job_state new_job_state = FG;
-        add_job(new_pid_job, new_job_state, cmd_line);
+        add_job(new_pid, new_job_state, cmd_line);
         // need to set the state (bg), and then add to the jobs list
         is_builtIn = 1;
     }
@@ -414,14 +415,16 @@ void sigchld_handler(int sig) {
  */
 void sigint_handler(int sig) {
     int olderrno = errno;
-    jid_t foreground_job = fg_job();
     sigset_t mask, prev_mask;
     Sigemptyset(&mask);
+    Sigaddset(&mask, SIGCHLD);
+    Sigaddset(&mask, SIGTSTP);
     Sigaddset(&mask, SIGINT);
     Sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signal
+    jid_t foreground_job = fg_job();
     if (foreground_job != 0) {
-        // if fg_job() returns 0, then there is no foreground job
-        kill(foreground_job, SIGINT);
+        pid_t foreground_pid = job_get_pid(foreground_job);
+        kill(-foreground_pid, sig);
     }
     Sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the blocked signal
     errno = olderrno;
@@ -437,14 +440,17 @@ void sigint_handler(int sig) {
  */
 void sigtstp_handler(int sig) {
     int olderrno = errno;
-    jid_t foreground_job = fg_job();
     sigset_t mask, prev_mask;
     Sigemptyset(&mask);
+    Sigaddset(&mask, SIGCHLD);
     Sigaddset(&mask, SIGTSTP);
+    Sigaddset(&mask, SIGINT);
     Sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signal
+    jid_t foreground_job = fg_job();
     if (foreground_job != 0) {
         // if fg_job() returns 0, then there is no foreground job
-        kill(foreground_job, SIGTSTP);
+        pid_t foreground_pid = job_get_pid(foreground_job);
+        kill(-foreground_pid, sig);
     }
     Sigprocmask(SIG_SETMASK, &prev_mask, NULL);
     errno = olderrno;
