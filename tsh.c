@@ -107,6 +107,42 @@ void Sigfillset(sigset_t *set) {
  * It judges if the command is a built_in command, if so, it does the job here.
  */
 
+void bg_fg_job(char **argv, int status) {
+    sigset_t mask, prev;
+    Sigemptyset(&mask);
+    Sigaddset(&mask, SIGINT);
+    Sigaddset(&mask, SIGTSTP);
+    Sigaddset(&mask, SIGCHLD);
+    Sigprocmask(SIG_BLOCK, &mask, &prev);
+    jid_t new_job = 0;
+    pid_t new_pid = 0;
+    const char *cmd_line;
+    if (argv[1][0] == '%') {
+        new_job = atoi(&argv[1][1]);
+        // if the job argument is a JID
+        new_pid = job_get_pid(new_job);
+    } else {
+        // the job argument is a PID
+        new_pid = atoi(&argv[1][0]);
+        new_job = job_from_pid(new_pid);
+    }
+    kill(-new_pid, SIGCONT);
+    cmd_line = job_get_cmdline(new_job);
+    delete_job(new_job); 
+    //always delete the job first since we are updating its state
+    if (status == BG) {
+        sio_printf("added job BG: %s \n", cmd_line);
+        add_job(new_pid, BG, cmd_line);
+        sio_printf("[%d] (%d) %s \n", new_job, new_pid, cmd_line);
+    }
+    if (status == FG) {
+        sio_printf("added job FG: %s \n", cmd_line);
+        add_job(new_pid, FG, cmd_line);
+    }
+    Sigprocmask(SIG_SETMASK, &prev, NULL);
+    return;
+}
+
 int builtin_command(struct cmdline_tokens *token) {
     int is_builtIn = 0;
     sigset_t mask, prev;
@@ -125,47 +161,11 @@ int builtin_command(struct cmdline_tokens *token) {
         is_builtIn = 1;
     } else if (token->builtin == BUILTIN_BG) {
         char **argv = token->argv;
-        jid_t new_job;
-        pid_t new_pid;
-        const char *cmd_line;
-        if (argv[1][0] == '%') {
-            sscanf(*argv, "%d", &new_job);
-            // if the job argument is a JID
-            sio_printf("new job: %d \n", new_job);
-            new_pid = job_get_pid(new_job);
-            cmd_line = job_get_cmdline(new_job);
-        } else {
-            // the job argument is a PID
-            sscanf(*argv, "%d", &new_pid);
-            jid_t new_job = job_from_pid(new_pid);
-            cmd_line = job_get_cmdline(new_job);
-        }
-        kill(new_pid, SIGCONT);
-        job_state new_job_state = BG;
-        add_job(new_pid, new_job_state, cmd_line);
-        sio_printf("[%d] (%d) /bin/ls &", new_job, new_pid);
-        // need to set the state (bg), and then add to the jobs list
+        bg_fg_job(argv, BG);
         is_builtIn = 1;
     } else if (token->builtin == BUILTIN_FG) {
         char **argv = (token)->argv;
-        jid_t new_job;
-        pid_t new_pid;
-        const char *cmd_line;
-        if (argv[1][0] == '%') {
-            sscanf(*argv, "%d", &new_job);
-            // if the job argument is a JID
-            new_pid = job_get_pid(new_job);
-            cmd_line = job_get_cmdline(new_job);
-        } else {
-            // the job argument is a PID
-            sscanf(*argv, "%d", &new_pid);
-            jid_t new_job = job_from_pid(new_pid);
-            cmd_line = job_get_cmdline(new_job);
-        }
-        kill(new_pid, SIGCONT);
-        job_state new_job_state = FG;
-        add_job(new_pid, new_job_state, cmd_line);
-        // need to set the state (bg), and then add to the jobs list
+        bg_fg_job(argv, FG);
         is_builtIn = 1;
     }
     Sigprocmask(SIG_SETMASK, &prev, NULL);
@@ -388,6 +388,7 @@ void sigchld_handler(int sig) {
         if (WIFSTOPPED(status)) {
             // if the child was stopped by a signal
             // delete the old job and add a new one with the state set to ST
+            // job_set_state(job, ST);
             job_set_state(job, ST);
             sio_printf("Job [%d] (%d) stopped by signal %d \n", job, pid,
                        WSTOPSIG(status));
