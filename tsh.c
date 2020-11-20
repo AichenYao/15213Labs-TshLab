@@ -128,16 +128,22 @@ void bg_fg_job(char **argv, int status) {
     }
     kill(-new_pid, SIGCONT);
     cmd_line = job_get_cmdline(new_job);
-    delete_job(new_job); 
-    //always delete the job first since we are updating its state
+    // delete_job(new_job);
+    // always delete the job first since we are updating its state
     if (status == BG) {
-        sio_printf("added job BG: %s \n", cmd_line);
-        add_job(new_pid, BG, cmd_line);
+        // sio_printf("added job BG: %s \n", cmd_line);
+        // add_job(new_pid, BG, cmd_line);
+        job_set_state(new_job, BG);
         sio_printf("[%d] (%d) %s \n", new_job, new_pid, cmd_line);
     }
     if (status == FG) {
-        sio_printf("added job FG: %s \n", cmd_line);
-        add_job(new_pid, FG, cmd_line);
+        job_set_state(new_job, FG);
+        while (fg_job() != 0) {
+            sigset_t mask_one;
+            Sigemptyset(&mask_one);
+            // while there is a foreground job
+            sigsuspend(&mask_one);
+        }
     }
     Sigprocmask(SIG_SETMASK, &prev, NULL);
     return;
@@ -214,6 +220,18 @@ void eval(const char *cmdline) {
             // assign each new child process a group ID
             setpgid(0, 0);
             Sigprocmask(SIG_SETMASK, &prev, NULL);
+            char *infile = token.infile;
+            char *outfile = token.outfile;
+            if (infile != NULL) {
+                int fd1 = open(infile, O_WRONLY);
+                dup2(fd1, STDIN_FILENO);
+                close(fd1);
+            }
+            if (outfile != NULL) {
+                int fd2 = open(outfile, O_WRONLY);
+                dup2(fd2, STDOUT_FILENO);
+                close(fd2);
+            }
             int exec_result = execve(argv[0], argv, environ);
             if (exec_result < 0) {
                 sio_printf("%s: Command not found\n", argv[0]);
@@ -237,7 +255,7 @@ void eval(const char *cmdline) {
         if (!bg) {
             while (fg_job() != 0) {
                 // while there is a foreground job
-                sigsuspend(&mask_one);
+                sigsuspend(&prev);
             }
         }
     }
@@ -397,6 +415,8 @@ void sigchld_handler(int sig) {
             sio_printf("Job [%d] (%d) terminated by signal %d \n", job, pid,
                        WTERMSIG(status));
             delete_job(job);
+        } else if (WIFCONTINUED(status)) {
+
         } else {
             // sio_printf("deleted job: %d \n", job);
             delete_job(job);
