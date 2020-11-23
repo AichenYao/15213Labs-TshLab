@@ -11,6 +11,16 @@
  * @author Aichen Yao <aicheny@andrew.cmu.edu>
  * Github ID: AichenYao
  * TODO: Include your name and Andrew ID here.
+ * This program creates an interactive shell with some basic functionalities.
+ * It parses single command line that the user types in to the shell and
+ * performs the tasks requested. Some of the commands that my shell handles
+ * include the built-ins (list-jobs, quit, etc.) and others such as echo. This
+ * shell has one job running in the foreground which is always waited for to be
+ * terminated while there could be multiple jobs in the background. We also
+ * implement signal handlers to handle SIGCHLD, SIGTSTP, and SIGINT signals
+ * separately and we apply signal blocking and unblocking when we want to run
+ * some portion of the code without being interefered with other signals, often
+ * in case of accessing the global variables such as the jobs list.
  */
 
 #include "csapp.h"
@@ -53,7 +63,7 @@ void sigint_handler(int sig);
 void sigquit_handler(int sig);
 void cleanup(void);
 //-----------------------Wrapper Functions--------------------------
-// this accounts for error handling as done by the textbook
+// The wrappers are not mandatory according to the handout.
 pid_t Fork(void) {
     pid_t pid;
     if ((pid = fork()) < 0) {
@@ -98,13 +108,17 @@ void Sigfillset(sigset_t *set) {
 }
 
 /**
- * @brief <What does is_builtIn do?>
+ * @brief bg_fg_job() handles the "bg job" and "fg job"  built-in commands
  *
- * TODO: Delete this comment and replace it with your own.
+ * @param[in]: It takes in the argv array parsed from the command line and the
+ * status which shows if the job should be continued to run in the background
+ * or the foreground
  *
- * NOTE: Cite Figure 8.24 from textbook
- * It takes in the argv, a field from the token struct after calling parseline.
- * It judges if the command is a built_in command, if so, it does the job here.
+ * NOTE: The function first extract the JID and PID from first element in argv.
+ * If it starts with %, then the job argument is JID, vice versa. Then it sends
+ * a SIGCONT signal to restart the process that was previously stopped. It also
+ * updates its job state in the global jobs list. If the job is in foreground,
+ * we wait for it to terminate using sigsuspend().
  */
 
 void bg_fg_job(char **argv, int status) {
@@ -113,6 +127,7 @@ void bg_fg_job(char **argv, int status) {
     Sigaddset(&mask, SIGINT);
     Sigaddset(&mask, SIGTSTP);
     Sigaddset(&mask, SIGCHLD);
+    // block all signals as we are accessing global variables.
     Sigprocmask(SIG_BLOCK, &mask, &prev);
     jid_t new_job = 0;
     pid_t new_pid = 0;
@@ -149,15 +164,28 @@ void bg_fg_job(char **argv, int status) {
     return;
 }
 
+/**
+ * @brief builtin_command() judges if the command belongs to the builtins.
+ *
+ * @param[in]: The consequent token struct after parsing a command line
+ *
+ * NOTE: The function returns 1 if the command is one of these four: quit, jobs,
+ * bg job, or fg job. It handls the first two in this function and calls for
+ * bg_fg_job() to handle the latter two cases. Remember to pass in the right
+ * status bg/fg when calling.
+ */
+
 int builtin_command(struct cmdline_tokens *token) {
     int is_builtIn = 0;
     sigset_t mask, prev;
     Sigemptyset(&mask);
+    // block signals for the same reason as the function above
     Sigaddset(&mask, SIGINT);
     Sigaddset(&mask, SIGTSTP);
     Sigaddset(&mask, SIGCHLD);
     Sigprocmask(SIG_BLOCK, &mask, &prev);
     if (token->builtin == BUILTIN_NONE) {
+        // not a builtin.
         is_builtIn = 0;
     } else if (token->builtin == BUILTIN_QUIT) {
         exit(0);
@@ -178,14 +206,15 @@ int builtin_command(struct cmdline_tokens *token) {
     return is_builtIn;
 }
 
-// * @brief <What does eval do?>
-//  *
-//  * TODO: Delete this comment and replace it with your own.
-//  *
-//  * NOTE: The shell is supposed to be a long-running process, so this function
-//  *       (and its helpers) should avoid exiting on error.  This is not to say
-//  *       they shouldn't detect and print (or otherwise handle) errors!
-//  */
+/*
+@brief eval parses a command line to the token struct containing relatble
+info, such as the arguments array (argv). If the command does not contain a
+builtin command (call builtin_command() to verify), then it forks a child
+process and call execve() to perform what is being requested. Before calling
+execve and after forking, implement redirect I/O. After calling execve(), we
+update the job list with the appropriate job state.
+@param[in] It takes in a command line put in by the user
+*/
 void eval(const char *cmdline) {
     parseline_return parse_result;
     struct cmdline_tokens token;
@@ -196,6 +225,7 @@ void eval(const char *cmdline) {
     // Parse command line
     parse_result = parseline(cmdline, &token);
     if (parse_result == PARSELINE_ERROR || parse_result == PARSELINE_EMPTY) {
+        // error handling
         return;
     }
     char **argv = token.argv;
@@ -223,12 +253,12 @@ void eval(const char *cmdline) {
             char *infile = token.infile;
             char *outfile = token.outfile;
             if (infile != NULL) {
-                int fd1 = open(infile, O_WRONLY);
+                int fd1 = open(infile, O_RDWR);
                 dup2(fd1, STDIN_FILENO);
                 close(fd1);
             }
             if (outfile != NULL) {
-                int fd2 = open(outfile, O_WRONLY);
+                int fd2 = open(outfile, O_RDONLY);
                 dup2(fd2, STDOUT_FILENO);
                 close(fd2);
             }
@@ -254,7 +284,7 @@ void eval(const char *cmdline) {
         }
         if (!bg) {
             while (fg_job() != 0) {
-                // while there is a foreground job
+                // while there is a foreground job, wait for it to terminate
                 sigsuspend(&prev);
             }
         }
@@ -264,14 +294,12 @@ void eval(const char *cmdline) {
 }
 
 /**
- * @brief <Write main's function header documentation. What does main do?>
- *
- * TODO: Delete this comment and replace it with your own.
- *
- * "Each function should be prefaced with a comment describing the purpose
- *  of the function (in a sentence or two), the function's arguments and
- *  return value, any error cases that are relevant to the caller,
- *  any pertinent side effects, and any assumptions that the function makes."
+ * @brief The main function gets the shell started. It first parses command line
+ * and sets some starting states such as the environment variable, verbose mode,
+ * install signal handlers, and initialize the job list. It also handles the
+ * case when we reach the end of a line.
+ * @param[in] It takes in argc, the number of arguments, and the arguments array
+ * ->argv.
  */
 int main(int argc, char **argv) {
     char c;
@@ -375,10 +403,8 @@ int main(int argc, char **argv) {
   Signal handlers
  *****************/
 
-/**
- * @brief <What does sigchld_handler do?>
- * takes in
- * TODO: When a child terminates or stops because it received a SIGSTOP, SIGSTP,
+/** Handler for SIGCHLD signals
+ * @brief When a child terminates or stops because it received a SIGSTOP, SIGSTP
  * SIGTTIN, or SIGTTOU signal, the kernel sends a SIGCHLD to the shell. The
  * signal handler sigchld_handler would reap all children that have just become
  * zombies.
@@ -389,7 +415,6 @@ int main(int argc, char **argv) {
  * Case III: iF the child was run to termination, just delete it
  */
 void sigchld_handler(int sig) {
-    // sio_printf("-------entered sigchld_handler--------\n");
     int status;
     pid_t pid;
     int olderrno = errno;
@@ -428,8 +453,8 @@ void sigchld_handler(int sig) {
 }
 
 /**
- * @brief <What does sigint_handler do?>
- * //param[in]: input signal to be sent to the foreground job
+ * @brief handler for SIGINT signals
+ * @param[in]: input signal to be sent to the foreground job
  * TODO: sigint handles Ctrl-C from the keyboard. When the shell receives this
  * signal from the kernel, the handler sends it to the foreground if there
  * exists such one.
@@ -441,11 +466,15 @@ void sigint_handler(int sig) {
     Sigaddset(&mask, SIGCHLD);
     Sigaddset(&mask, SIGTSTP);
     Sigaddset(&mask, SIGINT);
-    Sigprocmask(SIG_BLOCK, &mask, &prev_mask); // block signal
+    Sigprocmask(SIG_BLOCK, &mask, &prev_mask);
+    // block signals
     jid_t foreground_job = fg_job();
     if (foreground_job != 0) {
         pid_t foreground_pid = job_get_pid(foreground_job);
         kill(-foreground_pid, sig);
+        // pid argument here is the negative value of the pid of the fg job
+        // so the signal would be sent to all processes in the same process
+        // group
     }
     Sigprocmask(SIG_SETMASK, &prev_mask, NULL); // restore the blocked signal
     errno = olderrno;
@@ -453,7 +482,7 @@ void sigint_handler(int sig) {
 }
 
 /**
- * @brief <What does sigstp_handler do?>
+ * @brief handler for SIGTSTP signals
  * //param[in]: input signal to be sent to the foreground job
  * TODO: sigint handles Ctrl-Z from the keyboard. When the shell receives this
  * signal from the kernel, the handler sends it to the foreground if there
