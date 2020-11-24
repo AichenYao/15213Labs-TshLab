@@ -146,7 +146,6 @@ void bg_fg_job(char **argv, int status) {
     // delete_job(new_job);
     // always delete the job first since we are updating its state
     if (status == BG) {
-        // sio_printf("added job BG: %s \n", cmd_line);
         // add_job(new_pid, BG, cmd_line);
         job_set_state(new_job, BG);
         sio_printf("[%d] (%d) %s \n", new_job, new_pid, cmd_line);
@@ -191,7 +190,18 @@ int builtin_command(struct cmdline_tokens *token) {
         exit(0);
         is_builtIn = 1;
     } else if (token->builtin == BUILTIN_JOBS) {
-        list_jobs(STDOUT_FILENO);
+        char *outfile = token->outfile;
+        if ((outfile != NULL)) {
+            int fd2 = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, DEF_MODE);
+            if (fd2 == -1) {
+                perror("no permission to this file");
+                exit(-1);
+            }
+            list_jobs(fd2);
+            close(fd2);
+        } else {
+            list_jobs(STDOUT_FILENO);
+        }
         is_builtIn = 1;
     } else if (token->builtin == BUILTIN_BG) {
         char **argv = token->argv;
@@ -220,7 +230,7 @@ void eval(const char *cmdline) {
     struct cmdline_tokens token;
     int bg = 0;
     pid_t pid;
-    sigset_t mask, prev, mask_one;
+    sigset_t mask, prev;
 
     // Parse command line
     parse_result = parseline(cmdline, &token);
@@ -239,7 +249,6 @@ void eval(const char *cmdline) {
     }
     if (!is_builtIn) {
         // builtin commands would be handled separately
-        Sigemptyset(&mask_one);
         Sigemptyset(&mask);
         Sigaddset(&mask, SIGINT);
         Sigaddset(&mask, SIGTSTP);
@@ -253,12 +262,20 @@ void eval(const char *cmdline) {
             char *infile = token.infile;
             char *outfile = token.outfile;
             if (infile != NULL) {
-                int fd1 = open(infile, O_RDWR);
+                int fd1 = open(infile, O_RDONLY);
+                if (fd1 == -1) {
+                    perror("no permission to this file");
+                    exit(-1);
+                }
                 dup2(fd1, STDIN_FILENO);
                 close(fd1);
             }
-            if (outfile != NULL) {
-                int fd2 = open(outfile, O_RDONLY);
+            if ((outfile != NULL)) {
+                int fd2 = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, DEF_MODE);
+                if (fd2 == -1) {
+                    perror("no permission to this file");
+                    exit(-1);
+                }
                 dup2(fd2, STDOUT_FILENO);
                 close(fd2);
             }
@@ -518,6 +535,5 @@ void cleanup(void) {
     Signal(SIGINT, SIG_DFL);  // Handles Ctrl-C
     Signal(SIGTSTP, SIG_DFL); // Handles Ctrl-Z
     Signal(SIGCHLD, SIG_DFL); // Handles terminated or stopped child
-
     destroy_job_list();
 }
